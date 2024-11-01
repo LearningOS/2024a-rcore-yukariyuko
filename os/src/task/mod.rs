@@ -14,9 +14,13 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::syscall;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_ms;
+use crate::trap::TrapContext;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -54,6 +58,8 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_time_stamp: 0,
+            syscalls: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -81,6 +87,7 @@ impl TaskManager {
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
+        task0.task_time_stamp = get_time_ms();
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -90,11 +97,11 @@ impl TaskManager {
         panic!("unreachable in run_first_task!");
     }
 
-    /// Change the status of current `Running` task into `Ready`.
+    /// Change the status of current `Running` task into `Suspend`.
     fn mark_current_suspended(&self) {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
-        inner.tasks[current].task_status = TaskStatus::Ready;
+        inner.tasks[current].task_status = TaskStatus::Suspend;
     }
 
     /// Change the status of current `Running` task into `Exited`.
@@ -112,7 +119,10 @@ impl TaskManager {
         let current = inner.current_task;
         (current + 1..current + self.num_app + 1)
             .map(|id| id % self.num_app)
-            .find(|id| inner.tasks[*id].task_status == TaskStatus::Ready)
+            .find(|id| {
+                inner.tasks[*id].task_status == TaskStatus::Ready
+                    || inner.tasks[*id].task_status == TaskStatus::Suspend
+            })
     }
 
     /// Switch current `Running` task to the task we have found,
@@ -121,6 +131,9 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            if inner.tasks[next].task_status == TaskStatus::Ready {
+                inner.tasks[next].task_time_stamp = get_time_ms();
+            }
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -134,6 +147,28 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// Handle the trap
+    fn handle_trap(&self, cx: &mut TrapContext) {
+        // jump to next instruction anyway
+        cx.sepc += 4;
+        // record the syscall times
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].syscalls[cx.x[17]] += 1;
+        drop(inner);
+        // get system call return value
+        cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize;
+    }
+
+    fn get_task_info(&self) -> TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let status = inner.tasks[cur].task_status;
+        let times = inner.tasks[cur].syscalls;
+        let time = get_time_ms() - inner.tasks[cur].task_time_stamp;
+        TaskInfo::new(status, times, time)
     }
 }
 
@@ -168,4 +203,14 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// Handle the trap from user mode
+pub fn handle_trap(cx: &mut TrapContext) {
+    TASK_MANAGER.handle_trap(cx);
+}
+
+/// Get TaskInfo
+pub fn get_task_info() -> TaskInfo {
+    TASK_MANAGER.get_task_info()
 }
