@@ -71,6 +71,12 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// syscall tiems
+    pub syscalls: Vec<(usize, u32)>,
+
+    /// time the task first begin to run
+    pub time_stamp: usize,
 }
 
 impl TaskControlBlockInner {
@@ -272,6 +278,8 @@ pub enum TaskStatus {
     Ready,
     /// running
     Running,
+    /// suspend
+    Suspend,
     /// exited
     Zombie,
 }
