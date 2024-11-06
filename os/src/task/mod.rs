@@ -15,7 +15,9 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -80,6 +82,8 @@ impl TaskManager {
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
+        let cur = inner.current_task;
+        inner.tasks[cur].time_stamp = get_time_ms();
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -93,7 +97,7 @@ impl TaskManager {
     fn mark_current_suspended(&self) {
         let mut inner = self.inner.exclusive_access();
         let cur = inner.current_task;
-        inner.tasks[cur].task_status = TaskStatus::Ready;
+        inner.tasks[cur].task_status = TaskStatus::Suspend;
     }
 
     /// Change the status of current `Running` task into `Exited`.
@@ -111,7 +115,10 @@ impl TaskManager {
         let current = inner.current_task;
         (current + 1..current + self.num_app + 1)
             .map(|id| id % self.num_app)
-            .find(|id| inner.tasks[*id].task_status == TaskStatus::Ready)
+            .find(|id| {
+                inner.tasks[*id].task_status == TaskStatus::Ready
+                    || inner.tasks[*id].task_status == TaskStatus::Suspend
+            })
     }
 
     /// Get the current 'Running' task's token.
@@ -139,6 +146,9 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            if inner.tasks[next].task_status == TaskStatus::Ready {
+                inner.tasks[next].time_stamp = get_time_ms();
+            }
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -152,6 +162,37 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn count_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let mut find = false;
+        for (i, cnt) in &mut inner.tasks[cur].syscalls {
+            if *i == syscall_id {
+                *cnt += 1;
+                find = true;
+                break;
+            }
+        }
+        if !find {
+            inner.tasks[cur].syscalls.push((syscall_id, 1));
+        }
+    }
+
+    fn get_task_info(&self) -> (TaskStatus, Vec<(usize, u32)>, usize) {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let status = inner.tasks[cur].task_status;
+        let times = inner.tasks[cur].syscalls.clone();
+        let time = get_time_ms() - inner.tasks[cur].time_stamp;
+        (status, times, time)
+    }
+
+    fn get_app_memory_set(&self) -> *mut MemorySet {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        &mut inner.tasks[cur].memory_set
     }
 }
 
@@ -201,4 +242,19 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// count the syscall tiems
+pub fn count_syscall(syscall_id: usize) {
+    TASK_MANAGER.count_syscall(syscall_id);
+}
+
+/// get the TaskInfo of current task
+pub fn get_task_info() -> (TaskStatus, Vec<(usize, u32)>, usize) {
+    TASK_MANAGER.get_task_info()
+}
+
+/// Get the pagetable root of the current task
+pub fn get_app_memory_set() -> *mut MemorySet {
+    TASK_MANAGER.get_app_memory_set()
 }

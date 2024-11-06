@@ -70,6 +70,15 @@ impl MemorySet {
         }
         self.areas.push(map_area);
     }
+    /// unmap the MemArea
+    pub fn pop(&mut self, vpn: VirtPageNum) {
+        let areas = &mut self.areas;
+        for area in areas {
+            if vpn == area.vpn_range.get_start() {
+                area.unmap(&mut self.page_table);
+            }
+        }
+    }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
