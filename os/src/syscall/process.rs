@@ -1,4 +1,6 @@
 //! Process management syscalls
+use core::mem::size_of;
+
 use alloc::sync::Arc;
 
 use crate::{
@@ -6,9 +8,11 @@ use crate::{
     loader::get_app_data_by_name,
     mm::{translated_refmut, translated_str},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        add_task, current_task, current_user_token, current_user_token, exit_current_and_run_next,
+        get_app_memory_set,
+        get_task_info, suspend_current_and_run_next, TaskStatus,
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -117,41 +121,125 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    trace!("kernel: sys_get_time");
+    let bytes = translated_byte_buffer(current_user_token(), ts as *const u8, size_of::<TimeVal>());
+    let us = get_time_us();
+    let tst = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    let mut tstp = &tst as *const TimeVal as *const u8;
+    for byte in bytes {
+        for b in byte {
+            unsafe {
+                *b = *tstp;
+                tstp = tstp.add(1);
+            }
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
+    trace!("kernel: sys_task_info");
+    let (status, times, time) = get_task_info();
+    let mut syscall_times = [0; MAX_SYSCALL_NUM];
+    for (i, cnt) in times {
+        syscall_times[i] = cnt;
+    }
+    let bytes =
+        translated_byte_buffer(current_user_token(), ti as *const u8, size_of::<TaskInfo>());
+    let ti = TaskInfo {
+        status,
+        syscall_times,
+        time,
+    };
+    let mut tip = &ti as *const TaskInfo as *const u8;
+    for byte in bytes {
+        for b in byte {
+            unsafe {
+                *b = *tip;
+                tip = tip.add(1);
+            }
+        }
+    }
+    0
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement mmap.
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    trace!("kernel: sys_mmap");
+    if start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    if (port & !0x7 != 0) || (port & 0x7 == 0) {
+        return -1;
+    }
+    let mut pages_num = len / PAGE_SIZE;
+    if len % PAGE_SIZE != 0 {
+        pages_num += 1;
+    }
+    let len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    let memory_set = get_app_memory_set();
+    for i in 0..pages_num {
+        unsafe {
+            let vpa = VirtAddr(start + i * PAGE_SIZE);
+            if (*memory_set).translate(vpa.into()).is_some()
+                && (*memory_set).translate(vpa.into()).unwrap().is_valid()
+            {
+                return -1;
+            }
+        }
+    }
+    let mut permission = MapPermission::U;
+    if port & 1 != 0 {
+        permission |= MapPermission::R;
+    }
+    if port & 2 != 0 {
+        permission |= MapPermission::W;
+    }
+    if port & 4 != 0 {
+        permission |= MapPermission::X;
+    }
+    unsafe {
+        (*memory_set).insert_framed_area(start.into(), (start + len).into(), permission);
+    }
+    0
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement munmap.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    trace!("kernel: sys_munmap");
+    if start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    let mut pages_num = len / PAGE_SIZE;
+    if len % PAGE_SIZE != 0 {
+        pages_num += 1;
+    }
+    let memory_set = get_app_memory_set();
+    for i in 0..pages_num {
+        unsafe {
+            if (*memory_set)
+                .translate((start + i * PAGE_SIZE).into())
+                .is_none()
+                || !(*memory_set)
+                    .translate((start + i * PAGE_SIZE).into())
+                    .unwrap()
+                    .is_valid()
+            {
+                return -1;
+            }
+        }
+    }
+    unsafe {
+        (*memory_set).pop(VirtAddr::from(start).into());
+    }
+    0
 }
 
 /// change data segment size
