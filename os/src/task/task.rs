@@ -124,6 +124,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    syscalls: Vec::new(),
+                    time_stamp: 0,
                 })
             },
         };
@@ -197,6 +199,8 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    syscalls: parent_inner.syscalls.clone(),
+                    time_stamp: parent_inner.time_stamp,
                 })
             },
         });
@@ -253,8 +257,6 @@ pub enum TaskStatus {
     Ready,
     /// running
     Running,
-    /// suspend
-    Suspend,
     /// exited
     Zombie,
 }
