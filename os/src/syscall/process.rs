@@ -4,13 +4,12 @@ use core::mem::size_of;
 use alloc::sync::Arc;
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission, VirtAddr},
     task::{
-        add_task, current_task, current_user_token, current_user_token, exit_current_and_run_next,
-        get_app_memory_set,
-        get_task_info, suspend_current_and_run_next, TaskStatus,
+        add_task, current_task, current_user_token, exit_current_and_run_next,
+        suspend_current_and_run_next, TaskStatus,
     },
     timer::get_time_us,
 };
@@ -82,7 +81,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    //trace!("kernel: sys_waitpid");
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -145,7 +148,10 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info");
-    let (status, times, time) = get_task_info();
+    let task = current_task().unwrap();
+    let status = task.inner_exclusive_access().task_status;
+    let times = task.inner_exclusive_access().syscalls.clone();
+    let time = task.inner_exclusive_access().time_stamp;
     let mut syscall_times = [0; MAX_SYSCALL_NUM];
     for (i, cnt) in times {
         syscall_times[i] = cnt;
@@ -183,15 +189,14 @@ pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
         pages_num += 1;
     }
     let len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
-    let memory_set = get_app_memory_set();
+    let task = current_task().unwrap();
+    let memory_set = &mut task.inner_exclusive_access().memory_set;
     for i in 0..pages_num {
-        unsafe {
-            let vpa = VirtAddr(start + i * PAGE_SIZE);
-            if (*memory_set).translate(vpa.into()).is_some()
-                && (*memory_set).translate(vpa.into()).unwrap().is_valid()
-            {
-                return -1;
-            }
+        let vpa = VirtAddr(start + i * PAGE_SIZE);
+        if memory_set.translate(vpa.into()).is_some()
+            && memory_set.translate(vpa.into()).unwrap().is_valid()
+        {
+            return -1;
         }
     }
     let mut permission = MapPermission::U;
@@ -204,9 +209,7 @@ pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     if port & 4 != 0 {
         permission |= MapPermission::X;
     }
-    unsafe {
-        (*memory_set).insert_framed_area(start.into(), (start + len).into(), permission);
-    }
+    memory_set.insert_framed_area(start.into(), (start + len).into(), permission);
     0
 }
 
@@ -220,24 +223,21 @@ pub fn sys_munmap(start: usize, len: usize) -> isize {
     if len % PAGE_SIZE != 0 {
         pages_num += 1;
     }
-    let memory_set = get_app_memory_set();
+    let task = current_task().unwrap();
+    let memory_set = &mut task.inner_exclusive_access().memory_set;
     for i in 0..pages_num {
-        unsafe {
-            if (*memory_set)
+        if memory_set
+            .translate((start + i * PAGE_SIZE).into())
+            .is_none()
+            || !memory_set
                 .translate((start + i * PAGE_SIZE).into())
-                .is_none()
-                || !(*memory_set)
-                    .translate((start + i * PAGE_SIZE).into())
-                    .unwrap()
-                    .is_valid()
-            {
-                return -1;
-            }
+                .unwrap()
+                .is_valid()
+        {
+            return -1;
         }
     }
-    unsafe {
-        (*memory_set).pop(VirtAddr::from(start).into());
-    }
+    memory_set.pop(VirtAddr::from(start).into());
     0
 }
 

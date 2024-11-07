@@ -57,6 +57,7 @@ mod process;
 use fs::*;
 use process::*;
 
+use crate::task::current_task;
 use crate::fs::Stat;
 
 /// handle syscall exception with `syscall_id` and other arguments
@@ -85,4 +86,17 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
+}
+
+/// Count the syscall times of current process
+fn count_syscall(syscall_id: usize) {
+    let binding = current_task().unwrap();
+    let mut inner = binding.inner_exclusive_access();
+    for (id, times) in &mut inner.syscalls {
+        if *id == syscall_id {
+            *times += 1;
+            return;
+        }
+    }
+    inner.syscalls.push((syscall_id, 1));
 }
