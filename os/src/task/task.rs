@@ -72,6 +72,9 @@ pub struct TaskControlBlockInner {
     /// Program break
     pub program_brk: usize,
 
+    /// priority
+    pub priority: isize,
+
     /// syscall tiems
     pub syscalls: Vec<(usize, u32)>,
 
@@ -141,6 +144,7 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: 16,
                     syscalls: Vec::new(),
                     time_stamp: 0,
                 })
@@ -224,6 +228,7 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: parent_inner.priority,
                     syscalls: parent_inner.syscalls.clone(),
                     time_stamp: parent_inner.time_stamp,
                 })
