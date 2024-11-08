@@ -33,6 +33,18 @@ pub struct Stat {
     pad: [u64; 7],
 }
 
+impl Stat {
+    /// new
+    pub fn new(ino: u64, mode: StatMode) -> Self {
+        Self {
+            dev: 0,
+            nlink: 1,
+            pad: [0; 7],
+            ino,
+            mode,
+        }
+    }
+}
 bitflags! {
     /// The mode of a inode
     /// whether a directory or a file
@@ -46,5 +58,5 @@ bitflags! {
     }
 }
 
-pub use inode::{list_apps, open_file, OSInode, OpenFlags};
+pub use inode::{create_link, list_apps, open_file, unlinkat, OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};

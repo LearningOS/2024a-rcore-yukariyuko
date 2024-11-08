@@ -124,6 +124,17 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+/// create link between old_path and new_path
+pub fn create_link(old_path: &str, new_path: &str) -> isize {
+    ROOT_INODE.link(old_path, new_path)
+}
+
+/// unlink
+pub fn unlinkat(name: &str) -> isize {
+    ROOT_INODE.unlink(name);
+    -1
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
