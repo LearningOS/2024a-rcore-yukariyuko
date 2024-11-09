@@ -1,6 +1,8 @@
 //! File and filesystem-related syscalls
 
-use crate::fs::{create_link, open_file, unlinkat, OpenFlags, Stat};
+use core::mem::size_of;
+
+use crate::fs::{get_inode_id, open_file, OpenFlags, Stat, StatMode};
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 
@@ -51,11 +53,22 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     trace!("kernel:pid[{}] sys_open", current_task().unwrap().pid.0);
     let task = current_task().unwrap();
     let token = current_user_token();
-    let path = translated_str(token, path);
+    let mut path = translated_str(token, path);
+    let mut inner = task.inner_exclusive_access();
+    let mut create_new: bool = true;
+    if let Some(pt) = inner.link_table.get(&path) {
+        path = pt.clone();
+        create_new = false;
+    } else if !OpenFlags::from_bits(flags).unwrap().is_create() {
+        return -1;
+    }
     if let Some(inode) = open_file(path.as_str(), OpenFlags::from_bits(flags).unwrap()) {
-        let mut inner = task.inner_exclusive_access();
+        if create_new {
+            inner.link_table.insert(path.clone(), path.clone());
+        }
         let fd = inner.alloc_fd();
         inner.fd_table[fd] = Some(inode);
+        inner.fd_name.insert(fd, path);
         fd as isize
     } else {
         -1
@@ -77,12 +90,39 @@ pub fn sys_close(fd: usize) -> isize {
 }
 
 /// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
     trace!(
         "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let task = current_task().unwrap();
+    let token = current_user_token();
+    let bytes = translated_byte_buffer(token, st as *const u8, size_of::<Stat>());
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if inner.fd_table[fd].is_none() {
+        return -1;
+    }
+    let name = inner.fd_name.get(&fd).unwrap();
+    let mut cnt = 0;
+    for (_, tname) in &inner.link_table {
+        if *tname == *name {
+            cnt += 1;
+        }
+    }
+    let stt = Stat::new(get_inode_id(name).unwrap() as u64, StatMode::FILE, cnt);
+    let mut stp = &stt as *const Stat as *const u8;
+    for byte in bytes {
+        for b in byte {
+            unsafe {
+                *b = *stp;
+                stp = stp.add(1);
+            }
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Implement linkat.
@@ -96,7 +136,14 @@ pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
     if old_name == new_name {
         return -1;
     }
-    create_link(old_name.as_str(), new_name.as_str())
+    let inner = current_task().unwrap();
+    let link_table = &mut inner.inner_exclusive_access().link_table;
+    if let Some(tf_name) = link_table.get(&old_name) {
+        link_table.insert(new_name, tf_name.clone());
+        0
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement unlinkat.
@@ -106,5 +153,11 @@ pub fn sys_unlinkat(name: *const u8) -> isize {
         current_task().unwrap().pid.0
     );
     let name = translated_str(current_user_token(), name);
-    unlinkat(name.as_str())
+    let inner = current_task().unwrap();
+    let link_table = &mut inner.inner_exclusive_access().link_table;
+    if link_table.remove(&name).is_none() {
+        -1
+    } else {
+        0
+    }
 }

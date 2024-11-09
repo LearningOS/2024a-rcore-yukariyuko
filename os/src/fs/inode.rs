@@ -8,8 +8,8 @@ use super::File;
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::{string::String, sync::Arc};
 use bitflags::*;
 use easy_fs::{EasyFileSystem, Inode};
 use lazy_static::*;
@@ -70,6 +70,15 @@ pub fn list_apps() {
     println!("**************/");
 }
 
+/// list names
+pub fn get_all_app_name() -> Vec<String> {
+    ROOT_INODE.ls()
+}
+/// get_inode_id_by_name
+pub fn get_inode_id(name: &str) -> Option<u32> {
+    ROOT_INODE.get_inode_id_by_name(name)
+}
+
 bitflags! {
     ///  The flags argument to the open() system call is constructed by ORing together zero or more of the following values:
     pub struct OpenFlags: u32 {
@@ -98,6 +107,15 @@ impl OpenFlags {
             (true, true)
         }
     }
+
+    /// is CREATE
+    pub fn is_create(&self) -> bool {
+        if self.contains(Self::CREATE) {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Open a file
@@ -122,17 +140,6 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
             Arc::new(OSInode::new(readable, writable, inode))
         })
     }
-}
-
-/// create link between old_path and new_path
-pub fn create_link(old_path: &str, new_path: &str) -> isize {
-    ROOT_INODE.link(old_path, new_path)
-}
-
-/// unlink
-pub fn unlinkat(name: &str) -> isize {
-    ROOT_INODE.unlink(name);
-    -1
 }
 
 impl File for OSInode {

@@ -35,13 +35,13 @@ pub struct Stat {
 
 impl Stat {
     /// new
-    pub fn new(ino: u64, mode: StatMode) -> Self {
+    pub fn new(ino: u64, mode: StatMode, nlink: u32) -> Self {
         Self {
             dev: 0,
-            nlink: 1,
             pad: [0; 7],
             ino,
             mode,
+            nlink,
         }
     }
 }
@@ -58,5 +58,5 @@ bitflags! {
     }
 }
 
-pub use inode::{create_link, list_apps, open_file, unlinkat, OSInode, OpenFlags};
+pub use inode::{get_all_app_name, get_inode_id, list_apps, open_file, OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};

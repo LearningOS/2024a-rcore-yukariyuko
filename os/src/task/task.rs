@@ -2,10 +2,12 @@
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
-use crate::fs::{File, Stdin, Stdout};
+use crate::fs::{get_all_app_name, File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -80,6 +82,10 @@ pub struct TaskControlBlockInner {
 
     /// time the task first begin to run
     pub time_stamp: usize,
+    /// use to record hardlinks
+    pub link_table: BTreeMap<String, String>,
+    /// map fd to fsname
+    pub fd_name: BTreeMap<usize, String>,
 }
 
 impl TaskControlBlockInner {
@@ -125,6 +131,11 @@ impl TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
             inner: unsafe {
+                let apps = get_all_app_name();
+                let mut table = BTreeMap::new();
+                for s in apps {
+                    table.insert(s.clone(), s.clone());
+                }
                 UPSafeCell::new(TaskControlBlockInner {
                     trap_cx_ppn,
                     base_size: user_sp,
@@ -147,6 +158,8 @@ impl TaskControlBlock {
                     priority: 16,
                     syscalls: Vec::new(),
                     time_stamp: 0,
+                    link_table: table,
+                    fd_name: BTreeMap::new(),
                 })
             },
         };
@@ -231,6 +244,8 @@ impl TaskControlBlock {
                     priority: parent_inner.priority,
                     syscalls: parent_inner.syscalls.clone(),
                     time_stamp: parent_inner.time_stamp,
+                    link_table: parent_inner.link_table.clone(),
+                    fd_name: parent_inner.fd_name.clone(),
                 })
             },
         });
