@@ -1,7 +1,10 @@
 use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -71,10 +74,22 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    let check = process_inner.enable_dead_lock_check;
     drop(process_inner);
     drop(process);
-    mutex.lock();
-    0
+    if check && !deadlock_check(1, mutex_id) {
+        -0xDEAD
+    } else {
+        let binding = current_task().unwrap();
+        let mut binding = binding.inner_exclusive_access();
+        let need = &mut binding.mutex_need;
+        need[mutex_id] += 1;
+        mutex.lock();
+        need[mutex_id] -= 1;
+        let alllocation = &mut binding.mutex_allocation;
+        alllocation[mutex_id] += 1;
+        0
+    }
 }
 /// mutex unlock syscall
 pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
@@ -92,6 +107,10 @@ pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
+    let binding = current_task().unwrap();
+    let mut binding = binding.inner_exclusive_access();
+    let alllocation = &mut binding.sem_allocation;
+    alllocation[mutex_id] -= 1;
     drop(process_inner);
     drop(process);
     mutex.unlock();
@@ -144,6 +163,10 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let binding = current_task().unwrap();
+    let mut binding = binding.inner_exclusive_access();
+    let alllocation = &mut binding.sem_allocation;
+    alllocation[sem_id] -= 1;
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
     sem.up();
@@ -164,10 +187,23 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     );
     let process = current_process();
     let process_inner = process.inner_exclusive_access();
+    let check = process_inner.enable_dead_lock_check;
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
-    sem.down();
-    0
+    drop(process);
+    if check && !deadlock_check(1, sem_id) {
+        -0xDEAD
+    } else {
+        let binding = current_task().unwrap();
+        let mut binding = binding.inner_exclusive_access();
+        let need = &mut binding.sem_need;
+        need[sem_id] += 1;
+        sem.down();
+        need[sem_id] -= 1;
+        let allocation = &mut binding.sem_allocation;
+        allocation[sem_id] += 1;
+        0
+    }
 }
 /// condvar create syscall
 pub fn sys_condvar_create() -> isize {
@@ -245,7 +281,104 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 /// enable deadlock detection syscall
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
-pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
+pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
     trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    let process = current_process();
+    let mut procinr = process.inner_exclusive_access();
+    if enabled == 1 {
+        procinr.enable_dead_lock_check = true;
+        0
+    } else if enabled == 0 {
+        procinr.enable_dead_lock_check = false;
+        0
+    } else {
+        -1
+    }
+}
+
+fn deadlock_check(type_: i32, id: usize) -> bool {
+    let (mut work, allocation, mut need) = init(type_);
+    let mut finish = vec![false; need.len()];
+    let tid = current_task()
+        .unwrap()
+        .inner_exclusive_access()
+        .res
+        .as_ref()
+        .unwrap()
+        .tid;
+    need[tid][id] += 1;
+    loop {
+        let mut find = false;
+        for (i, f) in finish.iter_mut().enumerate() {
+            if !*f {
+                let mut can_fin = true;
+                for (j, n) in need[i].iter().enumerate() {
+                    if work[j] < *n {
+                        can_fin = false;
+                        break;
+                    }
+                }
+                if can_fin {
+                    for (j, n) in allocation[i].iter().enumerate() {
+                        work[j] += *n;
+                    }
+                    *f = true;
+                    find = true;
+                }
+            }
+        }
+        if !find {
+            break;
+        }
+    }
+    !finish.contains(&false)
+}
+
+fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let process = current_process();
+    let procinr = process.inner_exclusive_access();
+    let resources = if type_ == 0 {
+        procinr.mutex_list.len()
+    } else {
+        procinr.semaphore_list.len()
+    };
+    let mut work = if type_ == 0 {
+        vec![1; resources]
+    } else {
+        let mut v = vec![0; resources];
+        let list = &procinr.semaphore_list;
+        for (i, s) in list.iter().enumerate() {
+            if let Some(s) = s {
+                v[i] = s.total;
+            }
+        }
+        v
+    };
+    let mut allocation = Vec::new();
+    let mut need = Vec::new();
+    let mut map = BTreeMap::new();
+    let tasks = &procinr.tasks;
+    for task in tasks {
+        if let Some(task) = task.as_ref() {
+            let task = task.inner_exclusive_access();
+            let tid = task.res.as_ref().unwrap().tid;
+            map.insert(tid, map.len());
+            allocation.push(vec![0; resources]);
+            need.push(vec![0; resources]);
+            let (av, nv) = if type_ == 0 {
+                (&task.mutex_allocation, &task.mutex_need)
+            } else {
+                (&task.sem_allocation, &task.sem_need)
+            };
+            let idx = need.len() - 1;
+            for a in av {
+                allocation[idx][*a] += 1;
+                work[*a] -= 1;
+            }
+            for n in nv {
+                need[idx][*n] += 1;
+            }
+        }
+    }
+    (work, allocation, need)
 }

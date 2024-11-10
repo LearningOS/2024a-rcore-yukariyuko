@@ -8,6 +8,8 @@ use alloc::{collections::VecDeque, sync::Arc};
 pub struct Semaphore {
     /// semaphore inner
     pub inner: UPSafeCell<SemaphoreInner>,
+    /// usize
+    pub total: usize,
 }
 
 pub struct SemaphoreInner {
@@ -20,6 +22,7 @@ impl Semaphore {
     pub fn new(res_count: usize) -> Self {
         trace!("kernel: Semaphore::new");
         Self {
+            total: res_count,
             inner: unsafe {
                 UPSafeCell::new(SemaphoreInner {
                     count: res_count as isize,
