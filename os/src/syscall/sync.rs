@@ -319,7 +319,7 @@ fn deadlock_check(type_: i32, id: usize) -> bool {
         .unwrap()
         .tid;
     need[tid][id] += 1;
-    println!("tid:{}\nw{:?}\na{:?}\nn{:?}", tid, work, allocation, need);
+    //println!("tid:{}\nw{:?}\na{:?}\nn{:?}", tid, work, allocation, need);
     loop {
         let mut find = false;
         for (i, f) in finish.iter_mut().enumerate() {
@@ -363,7 +363,7 @@ fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
         }
         v
     };
-    println!("work_before: {:?}", work);
+    //println!("work_before: {:?}", work);
     let mut allocation = Vec::new();
     let mut need = Vec::new();
     let mut map = BTreeMap::new();
@@ -385,7 +385,7 @@ fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
             } else {
                 (&task.sem_allocation, &task.sem_need)
             };
-            println!("id:{} a{:?} n{:?}", tid, av, nv);
+            // println!("id:{} a{:?} n{:?}", tid, av, nv);
             let idx = need.len() - 1;
             for (iav, a) in av.iter().enumerate() {
                 allocation[idx][iav] += a;
