@@ -85,10 +85,10 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
-                    mutex_need: vec![0; 512],
-                    mutex_allocation: vec![0; 512],
-                    sem_need: vec![0; 512],
-                    sem_allocation: vec![0; 512],
+                    mutex_need: vec![0; 8],
+                    mutex_allocation: vec![0; 8],
+                    sem_need: vec![0; 8],
+                    sem_allocation: vec![0; 8],
                 })
             },
         }

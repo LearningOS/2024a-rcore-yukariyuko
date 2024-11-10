@@ -77,14 +77,18 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let check = process_inner.enable_dead_lock_check;
     drop(process_inner);
     drop(process);
-    if check && !deadlock_check(1, mutex_id) {
+    if check && !deadlock_check(0, mutex_id) {
         -0xDEAD
     } else {
         let binding = current_task().unwrap();
         let mut binding = binding.inner_exclusive_access();
         let need = &mut binding.mutex_need;
         need[mutex_id] += 1;
+        drop(binding);
         mutex.lock();
+        let binding = current_task().unwrap();
+        let mut binding = binding.inner_exclusive_access();
+        let need = &mut binding.mutex_need;
         need[mutex_id] -= 1;
         let alllocation = &mut binding.mutex_allocation;
         alllocation[mutex_id] += 1;
@@ -150,6 +154,7 @@ pub fn sys_semaphore_create(res_count: usize) -> isize {
 }
 /// semaphore up syscall
 pub fn sys_semaphore_up(sem_id: usize) -> isize {
+    println!("up");
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_up",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
@@ -174,6 +179,7 @@ pub fn sys_semaphore_up(sem_id: usize) -> isize {
 }
 /// semaphore down syscall
 pub fn sys_semaphore_down(sem_id: usize) -> isize {
+    println!("down");
     trace!(
         "kernel:pid[{}] tid[{}] sys_semaphore_down",
         current_task().unwrap().process.upgrade().unwrap().getpid(),
@@ -194,11 +200,16 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     if check && !deadlock_check(1, sem_id) {
         -0xDEAD
     } else {
+        println!("safe");
         let binding = current_task().unwrap();
         let mut binding = binding.inner_exclusive_access();
         let need = &mut binding.sem_need;
         need[sem_id] += 1;
+        drop(binding);
         sem.down();
+        let binding = current_task().unwrap();
+        let mut binding = binding.inner_exclusive_access();
+        let need = &mut binding.sem_need;
         need[sem_id] -= 1;
         let allocation = &mut binding.sem_allocation;
         allocation[sem_id] += 1;
@@ -297,6 +308,7 @@ pub fn sys_enable_deadlock_detect(enabled: usize) -> isize {
 }
 
 fn deadlock_check(type_: i32, id: usize) -> bool {
+    println!("checking");
     let (mut work, allocation, mut need) = init(type_);
     let mut finish = vec![false; need.len()];
     let tid = current_task()
@@ -307,6 +319,7 @@ fn deadlock_check(type_: i32, id: usize) -> bool {
         .unwrap()
         .tid;
     need[tid][id] += 1;
+    println!("tid:{}\nw{:?}\na{:?}\nn{:?}", tid, work, allocation, need);
     loop {
         let mut find = false;
         for (i, f) in finish.iter_mut().enumerate() {
@@ -337,11 +350,7 @@ fn deadlock_check(type_: i32, id: usize) -> bool {
 fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
     let process = current_process();
     let procinr = process.inner_exclusive_access();
-    let resources = if type_ == 0 {
-        procinr.mutex_list.len()
-    } else {
-        procinr.semaphore_list.len()
-    };
+    let resources = 8;
     let mut work = if type_ == 0 {
         vec![1; resources]
     } else {
@@ -354,6 +363,7 @@ fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
         }
         v
     };
+    println!("work_before: {:?}", work);
     let mut allocation = Vec::new();
     let mut need = Vec::new();
     let mut map = BTreeMap::new();
@@ -361,6 +371,11 @@ fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
     for task in tasks {
         if let Some(task) = task.as_ref() {
             let task = task.inner_exclusive_access();
+            if task.res.is_none() {
+                allocation.push(vec![0; resources]);
+                need.push(vec![0; resources]);
+                continue;
+            }
             let tid = task.res.as_ref().unwrap().tid;
             map.insert(tid, map.len());
             allocation.push(vec![0; resources]);
@@ -370,13 +385,14 @@ fn init(type_: i32) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
             } else {
                 (&task.sem_allocation, &task.sem_need)
             };
+            println!("id:{} a{:?} n{:?}", tid, av, nv);
             let idx = need.len() - 1;
-            for a in av {
-                allocation[idx][*a] += 1;
-                work[*a] -= 1;
+            for (iav, a) in av.iter().enumerate() {
+                allocation[idx][iav] += a;
+                work[iav] -= a;
             }
-            for n in nv {
-                need[idx][*n] += 1;
+            for (inv, n) in nv.iter().enumerate() {
+                need[idx][inv] += n;
             }
         }
     }
